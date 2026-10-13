@@ -37,8 +37,7 @@ local noRecoilEnabled = false
 local noSpreadEnabled = false
 local ESP_ENABLED = false
 local TRACERS_ENABLED = false
-local HEALTHBARS_ENABLED = false
-local SKELETONS_ENABLED = false
+local BOXES_ENABLED = false
 local TEAM_CHECK = true
 local MAX_STUCK_TIME = 1.5
 local firerateEnabled = false
@@ -53,7 +52,6 @@ local originalSpreadValue = nil
 
 -- === ESP STATE ===
 local ESP_Table = {}
-local skeleton_list = {}
 local TeammateHighlights = {}
 local viewmodels = Workspace:FindFirstChild("Viewmodels")
 
@@ -81,20 +79,18 @@ end
 
 -- === ESP SETUP ===
 local function hideESP(ui)
-    ui.Box.Visible = false
-    ui.Tracer.Visible = false
-    ui.Health.Visible = false
-    ui.Name.Visible = false
+    if ui.Box then ui.Box.Visible = false end
+    if ui.Tracer then ui.Tracer.Visible = false end
+    if ui.Name then ui.Name.Visible = false end
 end
 
 local function createPlayerESP(player)
     if player == Players.LocalPlayer or ESP_Table[player] then return end
     ESP_Table[player] = {
         Player = player,
-        Box = newDrawing("Square", {Thickness = 1, Filled = false, Color = ESP_COLOR, Visible = false}),
-        Tracer = newDrawing("Line", {Thickness = 1, Color = ESP_COLOR, Visible = false}),
-        Health = newDrawing("Line", {Thickness = 5, Visible = false}),
-        Name = newDrawing("Text", {Size = 13, Center = true, Outline = false, Color = Color3.fromRGB(255,255,255), Visible = false}),
+        Box = newDrawing("Square", {Thickness = 1.5, Filled = false, Color = ESP_COLOR, Visible = false}),
+        Tracer = newDrawing("Line", {Thickness = 1.5, Color = Color3.fromRGB(255, 0, 0), Visible = false}),
+        Name = newDrawing("Text", {Size = 12, Center = true, Outline = true, Color = Color3.fromRGB(255,255,255), Visible = false}),
         LastPosition = nil,
         StuckTime = 0
     }
@@ -105,26 +101,33 @@ Players.PlayerAdded:Connect(createPlayerESP)
 
 -- === FIND CHARACTER ===
 local function findCharacter(player)
-    for _, model in ipairs(Workspace:GetChildren()) do
-        if model:IsA("Model") and model.Name == player.Name then
-            local hum = model:FindFirstChildOfClass("Humanoid")
-            local root = model:FindFirstChild("HumanoidRootPart")
-            if hum and root then return model, hum, root end
-        end
+    local char = player.Character
+    if char then
+        local hum = char:FindFirstChildOfClass("Humanoid")
+        local root = char:FindFirstChild("HumanoidRootPart")
+        if hum and root then return char, hum, root end
     end
     return nil
 end
 
 -- === GET BOX ===
 local function getBoundingBox(character)
-    local cf, size = character:GetBoundingBox()
-    local top = cf.Position + Vector3.new(0, size.Y/2, 0)
-    local bottom = cf.Position - Vector3.new(0, size.Y/2, 0)
+    local hrp = character:FindFirstChild("HumanoidRootPart")
+    local hum = character:FindFirstChildOfClass("Humanoid")
+    if not hrp or not hum then return nil end
+    
+    local pos = hrp.Position
+    local top = pos + Vector3.new(0, hum.Height/2 + 0.5, 0)
+    local bottom = pos - Vector3.new(0, hum.Height/2, 0)
+    
     local topPos, vis1 = Camera:WorldToViewportPoint(top)
     local bottomPos, vis2 = Camera:WorldToViewportPoint(bottom)
+    
     if not vis1 or not vis2 then return nil end
+    
     local height = math.abs(topPos.Y - bottomPos.Y)
-    local width = height / 2
+    local width = height * 0.6
+    
     return Vector2.new(topPos.X - width/2, topPos.Y), width, height
 end
 
@@ -134,137 +137,57 @@ local function getTracerOrigin()
     return Vector2.new(vp.X/2, vp.Y)
 end
 
--- === SKELETON SYSTEM ===
-local bones = {
-    {"torso", "head"}, {"torso", "shoulder1"}, {"torso", "shoulder2"},
-    {"shoulder1", "arm1"}, {"shoulder2", "arm2"}, {"torso", "hip1"},
-    {"torso", "hip2"}, {"hip1", "leg1"}, {"hip2", "leg2"}
-}
-local requiredBones = {"torso", "head", "shoulder1", "shoulder2", "arm1", "arm2", "hip1", "hip2", "leg1", "leg2"}
-
-local function isValidSkeletonModel(model)
-    if not model or not model.Parent or model.Name == "LocalViewmodel" or not viewmodels or model.Parent ~= viewmodels then return false end
-    local torso = model:FindFirstChild("torso")
-    return torso and torso:IsA("BasePart")
-end
-
-local function createSkeleton(character)
-    if not character or skeleton_list[character] or not isValidSkeletonModel(character) then return end
-    local charBones = {}
-    for _, name in ipairs(requiredBones) do
-        local b = character:FindFirstChild(name)
-        if not b or not b:IsA("BasePart") then return end
-        charBones[name] = b
-    end
-    local lines = {}
-    for i = 1, #bones do
-        lines[i] = newDrawing("Line", {Visible = false, Color = ESP_COLOR, Thickness = 1, Transparency = 1})
-    end
-    skeleton_list[character] = {Lines = lines, Bones = charBones}
-end
-
-local function removeSkeleton(character)
-    local data = skeleton_list[character]
-    if not data then return end
-    for _, line in ipairs(data.Lines) do line:Remove() end
-    skeleton_list[character] = nil
-end
-
 -- === MAIN ESP UPDATE LOOP ===
 RunService.RenderStepped:Connect(function(dt)
-    if not viewmodels then viewmodels = Workspace:FindFirstChild("Viewmodels") end
     Camera = Workspace.CurrentCamera
-    -- Player ESP
     for player, ui in pairs(ESP_Table) do
-        task.spawn(function()
-            if TEAM_CHECK and player.Team == Players.LocalPlayer.Team then hideESP(ui) return end
-            local char, hum, root = findCharacter(player)
-            if not char or not hum or hum.Health <= 0 then hideESP(ui) return end
-            local pos, w, h = getBoundingBox(char)
-            if not pos then hideESP(ui) return end
-            if ui.LastPosition and (ui.LastPosition - pos).Magnitude < 1 then
-                ui.StuckTime = ui.StuckTime + dt
-            else
-                ui.StuckTime = 0
-            end
-            if ui.StuckTime >= MAX_STUCK_TIME then hideESP(ui) return end
-            ui.LastPosition = pos
-            ui.Box.Visible = ESP_ENABLED
-            if ESP_ENABLED then
-                ui.Box.Size = Vector2.new(w, h)
-                ui.Box.Position = pos
-                ui.Box.Color = ESP_COLOR
-            end
-            ui.Name.Visible = ESP_ENABLED
-            if ESP_ENABLED then
-                local myRoot = Players.LocalPlayer.Character and Players.LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-                local dist = myRoot and math.floor((myRoot.Position - root.Position).Magnitude) or "?"
-                ui.Name.Text = player.Name .. " [" .. dist .. "m]"
-                ui.Name.Position = Vector2.new(pos.X + w/2, pos.Y - 15)
-            end
-            ui.Tracer.Visible = TRACERS_ENABLED
-            if TRACERS_ENABLED then
-                ui.Tracer.From = getTracerOrigin()
-                ui.Tracer.To = Vector2.new(pos.X + w/2, pos.Y)
-                ui.Tracer.Color = ESP_COLOR
-            end
-            ui.Health.Visible = HEALTHBARS_ENABLED
-            if HEALTHBARS_ENABLED then
-                local hp = hum.Health / hum.MaxHealth
-                local hpHeight = h * hp
-                ui.Health.From = Vector2.new(pos.X - 5, pos.Y + h)
-                ui.Health.To = Vector2.new(pos.X - 5, pos.Y + h - hpHeight)
-                ui.Health.Color = Color3.fromRGB(255 - (255*hp), 255*hp, 0)
-            end
-        end)
-    end
-    -- Skeleton ESP
-    if SKELETONS_ENABLED and viewmodels then
-        for _, model in ipairs(viewmodels:GetChildren()) do
-            if not model:IsA("Model") then continue end
-            if not isValidSkeletonModel(model) then removeSkeleton(model) continue end
-            if is_teammate(model) then removeSkeleton(model) continue end
-            local torso = model:FindFirstChild("torso")
-            if not torso or torso.Transparency >= 1 then removeSkeleton(model) continue end
-            local pos, onScreen = Camera:WorldToScreenPoint(torso.Position)
-            if not onScreen or (Camera.CFrame.Position - torso.Position).Magnitude > 3571 then
-                removeSkeleton(model)
-                continue
-            end
-            if not skeleton_list[model] then createSkeleton(model) end
-            local skel = skeleton_list[model]
-            if not skel then continue end
-            for i, conn in ipairs(bones) do
-                local b1, b2 = skel.Bones[conn[1]], skel.Bones[conn[2]]
-                if b1 and b2 then
-                    local p1 = Camera:WorldToViewportPoint(b1.Position)
-                    local p2 = Camera:WorldToViewportPoint(b2.Position)
-                    if p1.Z > 0 and p2.Z > 0 then
-                        skel.Lines[i].From = Vector2.new(p1.X, p1.Y)
-                        skel.Lines[i].To = Vector2.new(p2.X, p2.Y)
-                        skel.Lines[i].Visible = true
-                        skel.Lines[i].Color = ESP_COLOR
-                    else
-                        skel.Lines[i].Visible = false
-                    end
-                else
-                    skel.Lines[i].Visible = false
-                end
-            end
+        if not BOXES_ENABLED and not TRACERS_ENABLED then
+            hideESP(ui)
+            continue
         end
-    else
-        for _, data in pairs(skeleton_list) do
-            for _, line in ipairs(data.Lines) do
-                line.Visible = false
-            end
+        
+        if TEAM_CHECK and player.Team == Players.LocalPlayer.Team then
+            hideESP(ui)
+            continue
+        end
+        
+        local char, hum, root = findCharacter(player)
+        if not char or not hum or hum.Health <= 0 then
+            hideESP(ui)
+            continue
+        end
+        
+        local pos, w, h = getBoundingBox(char)
+        if not pos then
+            hideESP(ui)
+            continue
+        end
+        
+        ui.Box.Visible = BOXES_ENABLED
+        if BOXES_ENABLED then
+            ui.Box.Size = Vector2.new(w, h)
+            ui.Box.Position = pos
+        end
+        
+        ui.Tracer.Visible = TRACERS_ENABLED
+        if TRACERS_ENABLED then
+            ui.Tracer.From = getTracerOrigin()
+            ui.Tracer.To = Vector2.new(pos.X + w/2, pos.Y + h)
+        end
+        
+        ui.Name.Visible = BOXES_ENABLED
+        if BOXES_ENABLED then
+            ui.Name.Text = player.Name
+            ui.Name.Position = Vector2.new(pos.X + w/2, pos.Y - 16)
         end
     end
 end)
 
--- === HELPER: Get Value Object from Path ===
+-- === HELPER: Get Value Instance ===
 local function GetValueInstance(pathStr)
-    local current = Workspace
-    for _, part in ipairs(string.split(pathStr, ".")) do
+    local current = game
+    local parts = string.split(pathStr, ".")
+    for _, part in ipairs(parts) do
         current = current:FindFirstChild(part)
         if not current then return nil end
     end
@@ -274,105 +197,60 @@ end
 -- === FIRERATE ===
 local function SetFirerate(enabled)
     local firerateObj = GetValueInstance(FIRERATE_PATH)
-    if not firerateObj then
-        warn("❌ Firerate path not found: Workspace." .. FIRERATE_PATH)
-        return
-    end
+    if not firerateObj then return end
     if enabled then
-        if originalFirerateValue == nil then
-            originalFirerateValue = firerateObj.Value
-        end
+        if originalFirerateValue == nil then originalFirerateValue = firerateObj.Value end
         firerateObj.Value = FIRERATE_NEW_VALUE
-        print("✅ Firerate → " .. FIRERATE_NEW_VALUE)
     else
-        if originalFirerateValue ~= nil then
-            firerateObj.Value = originalFirerateValue
-            print("✅ Firerate restored → " .. originalFirerateValue)
-        end
+        if originalFirerateValue ~= nil then firerateObj.Value = originalFirerateValue end
     end
 end
 
 -- === ACCURACY ===
 local function SetAccuracy(enabled)
     local accuracyObj = GetValueInstance(ACCURACY_PATH)
-    if not accuracyObj then
-        warn("❌ Accuracy path not found: Workspace." .. ACCURACY_PATH)
-        return
-    end
+    if not accuracyObj then return end
     if enabled then
-        if originalAccuracyValue == nil then
-            originalAccuracyValue = accuracyObj.Value
-        end
+        if originalAccuracyValue == nil then originalAccuracyValue = accuracyObj.Value end
         accuracyObj.Value = ACCURACY_NEW_VALUE
-        print("✅ Accuracy → " .. ACCURACY_NEW_VALUE)
     else
-        if originalAccuracyValue ~= nil then
-            accuracyObj.Value = originalAccuracyValue
-            print("✅ Accuracy restored → " .. originalAccuracyValue)
-        end
+        if originalAccuracyValue ~= nil then accuracyObj.Value = originalAccuracyValue end
     end
 end
 
 -- === INSTANT RELOAD ===
 local function SetInstantReload(enabled)
     local reloadSpeedObj = GetValueInstance(RELOAD_SPEED_PATH)
-    if not reloadSpeedObj then
-        warn("❌ Reload speed path not found: Workspace." .. RELOAD_SPEED_PATH)
-        return
-    end
+    if not reloadSpeedObj then return end
     if enabled then
-        if originalReloadSpeedValue == nil then
-            originalReloadSpeedValue = reloadSpeedObj.Value
-        end
+        if originalReloadSpeedValue == nil then originalReloadSpeedValue = reloadSpeedObj.Value end
         reloadSpeedObj.Value = RELOAD_SPEED_NEW_VALUE
-        print("✅ Instant Reload → " .. RELOAD_SPEED_NEW_VALUE)
     else
-        if originalReloadSpeedValue ~= nil then
-            reloadSpeedObj.Value = originalReloadSpeedValue
-            print("✅ Reload Speed restored → " .. originalReloadSpeedValue)
-        end
+        if originalReloadSpeedValue ~= nil then reloadSpeedObj.Value = originalReloadSpeedValue end
     end
 end
 
 -- === MAX MAG ===
 local function SetMaxMag(enabled)
     local magObj = GetValueInstance(MAG_PATH)
-    if not magObj then
-        warn("❌ Mag path not found: Workspace." .. MAG_PATH)
-        return
-    end
+    if not magObj then return end
     if enabled then
-        if originalMagValue == nil then
-            originalMagValue = magObj.Value
-        end
+        if originalMagValue == nil then originalMagValue = magObj.Value end
         magObj.Value = MAG_NEW_VALUE
-        print("✅ Max Mag → " .. MAG_NEW_VALUE)
     else
-        if originalMagValue ~= nil then
-            magObj.Value = originalMagValue
-            print("✅ Mag restored → " .. originalMagValue)
-        end
+        if originalMagValue ~= nil then magObj.Value = originalMagValue end
     end
 end
 
 -- === NO SPREAD ===
 local function SetNoSpread(enabled)
     local spreadObj = GetValueInstance(SPREAD_PATH)
-    if not spreadObj then
-        warn("❌ Spread path not found: Workspace." .. SPREAD_PATH)
-        return
-    end
+    if not spreadObj then return end
     if enabled then
-        if originalSpreadValue == nil then
-            originalSpreadValue = spreadObj.Value
-        end
+        if originalSpreadValue == nil then originalSpreadValue = spreadObj.Value end
         spreadObj.Value = SPREAD_NEW_VALUE
-        print("✅ No Spread → 0")
     else
-        if originalSpreadValue ~= nil then
-            spreadObj.Value = originalSpreadValue
-            print("✅ Spread restored → " .. originalSpreadValue)
-        end
+        if originalSpreadValue ~= nil then spreadObj.Value = originalSpreadValue end
     end
 end
 
@@ -435,23 +313,22 @@ end)
 local function SetNoRecoil(enabled)
     noRecoilEnabled = enabled
     NoRecoilSettings.Enabled = enabled
-    if enabled then syncRecoil() print("✅ No Recoil: ON")
-    else isFiring = false; recoveryTime = 0; print("✅ No Recoil: OFF") end
+    if enabled then syncRecoil() end
 end
 
--- === RAGEBOT VISUALS (LOCAL PLAYER) ===
-local original = {}
+-- === RAGEBOT VISUALS ===
+local originalParts = {}
 local function GetViewmodel() return Workspace:FindFirstChild("Viewmodels") and Workspace.Viewmodels:FindFirstChild("LocalViewmodel") end
 
-local function CacheOriginal()
-    table.clear(original)
+local function CacheOriginalColors()
+    table.clear(originalParts)
     local c = lp.Character
     if not c then return end
     for _, d in ipairs(c:GetDescendants()) do
         if d:IsA("BasePart") then
-            original[d] = {Transparency = d.Transparency, Color = d.Color}
+            originalParts[d] = {Transparency = d.Transparency, Color = d.Color}
         elseif d:IsA("Clothing") or d:IsA("Shirt") or d:IsA("Pants") then
-            original[d] = {Transparency = d.Transparency}
+            originalParts[d] = {Transparency = d.Transparency}
         end
     end
 end
@@ -460,20 +337,20 @@ local function ApplyPurple(on)
     local c = lp.Character
     if not c then return end
     if not on then
-        for o, d in pairs(original) do
-            if o then
-                if o:IsA("BasePart") then
-                    o.Transparency = d.Transparency
-                    o.Color = d.Color
+        for obj, data in pairs(originalParts) do
+            if obj then
+                if obj:IsA("BasePart") then
+                    obj.Transparency = data.Transparency
+                    obj.Color = data.Color
                 else
-                    o.Transparency = d.Transparency
+                    obj.Transparency = data.Transparency
                 end
             end
         end
-        table.clear(original)
+        table.clear(originalParts)
         return
     end
-    CacheOriginal()
+    CacheOriginalColors()
     for _, d in ipairs(c:GetDescendants()) do
         if d:IsA("BasePart") then
             d.Color = PURPLE_COLOR
@@ -503,8 +380,16 @@ local function ApplyPurple(on)
 end
 
 lp.CharacterAdded:Connect(function()
-    task.wait(0.15)
+    task.wait(0.2)
     if ragebotVisualsEnabled then ApplyPurple(true) end
+end)
+
+-- === MENU TOGGLE (RIGHT SHIFT) ===
+UIS.InputBegan:ConnectFunction(function(input)
+    if input.KeyCode == Enum.KeyCode.RightShift then
+        MenuOpen = not MenuOpen
+        MainFrame.Visible = MenuOpen
+    end
 end)
 
 -- === MENU BUILD ===
@@ -513,13 +398,14 @@ ScreenGui.Name = "MyMenu"
 ScreenGui.Parent = CoreGui
 ScreenGui.DisplayOrder = 100000
 ScreenGui.ResetOnSpawn = false
+pcall(function() ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling end)
 
 local MainFrame = Instance.new("Frame")
-MainFrame.Size = UDim2.new(0, 480, 0, 640)
-MainFrame.Position = UDim2.new(0.05, 0, 0.05, 0)
-MainFrame.BackgroundColor3 = Color3.fromRGB(24, 24, 32)
-MainFrame.BorderSizePixel = 2
-MainFrame.BorderColor3 = Color3.fromRGB(60, 60, 80)
+MainFrame.Size = UDim2.new(0, 460, 0, 620)
+MainFrame.Position = UDim2.new(0.02, 0, 0.05, 0)
+MainFrame.BackgroundColor3 = Color3.fromRGB(22, 22, 30)
+MainFrame.BorderSizePixel = 1
+MainFrame.BorderColor3 = Color3.fromRGB(70, 60, 120)
 MainFrame.Active = true
 MainFrame.Draggable = true
 MainFrame.Visible = MenuOpen
@@ -527,422 +413,206 @@ MainFrame.Parent = ScreenGui
 Instance.new("UICorner", MainFrame).CornerRadius = UDim.new(0, 10)
 
 local TabBar = Instance.new("Frame")
-TabBar.Size = UDim2.new(1, 0, 0, 45)
-TabBar.BackgroundColor3 = Color3.fromRGB(35, 35, 50)
+TabBar.Size = UDim2.new(1, 0, 0, 44)
+TabBar.BackgroundColor3 = Color3.fromRGB(32, 32, 45)
 TabBar.Parent = MainFrame
 Instance.new("UICorner", TabBar).CornerRadius = UDim.new(0, 10)
 
 local Content = Instance.new("Frame")
-Content.Size = UDim2.new(1, -20, 1, -85)
-Content.Position = UDim2.new(0, 10, 0, 65)
+Content.Size = UDim2.new(1, -20, 1, -80)
+Content.Position = UDim2.new(0, 10, 0, 60)
 Content.BackgroundTransparency = 1
 Content.Parent = MainFrame
 
 local TabBtns = {}
-for i, n in ipairs(Tabs) do
+for i, name in ipairs(Tabs) do
     local btn = Instance.new("TextButton")
-    btn.Text = n
+    btn.Text = name
     btn.Font = Enum.Font.GothamBold
-    btn.TextSize = 14
-    btn.TextColor3 = n == CurrentTab and Color3.fromRGB(100, 200, 255) or Color3.fromRGB(170, 170, 180)
-    btn.BackgroundColor3 = n == CurrentTab and Color3.fromRGB(50, 50, 75) or Color3.fromRGB(40, 40, 55)
-    btn.Size = UDim2.new(0.23, 0, 0.8, 0)
-    btn.Position = UDim2.new(0.015 + ((i-1) * 0.25), 0, 0.1, 0)
+    btn.TextSize = 13
+    btn.TextColor3 = name == CurrentTab and Color3.fromRGB(160, 100, 255) or Color3.fromRGB(140, 140, 155)
+    btn.BackgroundColor3 = name == CurrentTab and Color3.fromRGB(55, 45, 85) or Color3.fromRGB(40, 40, 55)
+    btn.Size = UDim2.new(0.235, 0, 0.78, 0)
+    btn.Position = UDim2.new(0.012 + ((i-1) * 0.252), 0, 0.11, 0)
     btn.Parent = TabBar
     Instance.new("UICorner", btn).CornerRadius = UDim.new(0, 6)
-    TabBtns[n] = btn
+    TabBtns[name] = btn
     btn.MouseButton1Click:Connect(function()
-        CurrentTab = n
-        for name, b in pairs(TabBtns) do
-            b.TextColor3 = name == CurrentTab and Color3.fromRGB(100, 200, 255) or Color3.fromRGB(170, 170, 180)
-            b.BackgroundColor3 = name == CurrentTab and Color3.fromRGB(50, 50, 75) or Color3.fromRGB(40, 40, 55)
+        CurrentTab = name
+        for tabName, b in pairs(TabBtns) do
+            b.TextColor3 = tabName == CurrentTab and Color3.fromRGB(160, 100, 255) or Color3.fromRGB(140, 140, 155)
+            b.BackgroundColor3 = tabName == CurrentTab and Color3.fromRGB(55, 45, 85) or Color3.fromRGB(40, 40, 55)
         end
         UpdateContent()
     end)
 end
 
+-- === TOGGLE HELPER ===
+local function MakeToggle(parent, labelText, enabled, callback)
+    local Container = Instance.new("Frame")
+    Container.Size = UDim2.new(1, 0, 0, 52)
+    Container.BackgroundColor3 = Color3.fromRGB(38, 38, 50)
+    Container.Parent = parent
+    Instance.new("UICorner", Container).CornerRadius = UDim.new(0, 8)
+    
+    local Label = Instance.new("TextLabel")
+    Label.Text = labelText
+    Label.Font = Enum.Font.Gotham
+    Label.TextColor3 = Color3.fromRGB(230, 230, 230)
+    Label.TextSize = 14
+    Label.Size = UDim2.new(1, -75, 1, 0)
+    Label.Position = UDim2.new(0, 15, 0, 0)
+    Label.TextXAlignment = Enum.TextXAlignment.Left
+    Label.BackgroundTransparency = 1
+    Label.Parent = Container
+    
+    local ToggleBtn = Instance.new("TextButton")
+    ToggleBtn.Size = UDim2.new(0, 48, 0, 24)
+    ToggleBtn.Position = UDim2.new(1, -63, 0.5, -12)
+    ToggleBtn.BackgroundColor3 = enabled and Color3.fromRGB(100, 60, 200) or Color3.fromRGB(70, 70, 90)
+    ToggleBtn.Text = ""
+    ToggleBtn.Parent = Container
+    Instance.new("UICorner", ToggleBtn).CornerRadius = UDim.new(1, 0)
+    
+    local Knob = Instance.new("Frame")
+    Knob.Size = UDim2.new(0, 18, 0, 18)
+    Knob.Position = enabled and UDim2.new(1, -21, 0.5, -9) or UDim2.new(0, 3, 0.5, -9)
+    Knob.BackgroundColor3 = Color3.new(1, 1, 1)
+    Knob.Parent = ToggleBtn
+    Instance.new("UICorner", Knob).CornerRadius = UDim.new(1, 0)
+    
+    local isOn = enabled
+    ToggleBtn.MouseButton1Click:Connect(function()
+        isOn = not isOn
+        ToggleBtn.BackgroundColor3 = isOn and Color3.fromRGB(100, 60, 200) or Color3.fromRGB(70, 70, 90)
+        TweenService:Create(Knob, TweenInfo.new(0.12), {Position = isOn and UDim2.new(1, -21, 0.5, -9) or UDim2.new(0, 3, 0.5, -9)}):Play()
+        callback(isOn)
+    end)
+    
+    return Container
+end
+
+-- === UPDATE CONTENT ===
 function UpdateContent()
     Content:ClearAllChildren()
-    if CurrentTab == "Ragebot" then
-        local T = Instance.new("TextLabel")
-        T.Text = "Ragebot"
-        T.Font = Enum.Font.GothamBold
-        T.TextColor3 = Color3.fromRGB(255, 255, 255)
-        T.TextSize = 18
-        T.Size = UDim2.new(1, 0, 0, 30)
-        T.TextXAlignment = Enum.TextXAlignment.Left
-        T.BackgroundTransparency = 1
-        T.Parent = Content
-
-        local yPos = 50
-
-        -- Firerate
-        local FG = Instance.new("Frame")
-        FG.Size = UDim2.new(1, 0, 0, 55)
-        FG.Position = UDim2.new(0, 0, 0, yPos)
-        FG.BackgroundColor3 = Color3.fromRGB(40, 40, 55)
-        FG.Parent = Content
-        Instance.new("UICorner", FG).CornerRadius = UDim.new(0, 8)
-
-        local FL = Instance.new("TextLabel")
-        FL.Text = "Firerate (M4 → 9999)"
-        FL.Font = Enum.Font.Gotham
-        FL.TextColor3 = Color3.fromRGB(220, 220, 220)
-        FL.TextSize = 15
-        FL.Size = UDim2.new(1, -80, 1, 0)
-        FL.Position = UDim2.new(0, 15, 0, 0)
-        FL.TextXAlignment = Enum.TextXAlignment.Left
-        FL.BackgroundTransparency = 1
-        FL.Parent = FG
-
-        local FS = Instance.new("TextButton")
-        FS.Size = UDim2.new(0, 50, 0, 26)
-        FS.Position = UDim2.new(1, -60, 0.5, -13)
-        FS.BackgroundColor3 = firerateEnabled and Color3.fromRGB(50, 205, 120) or Color3.fromRGB(80, 80, 100)
-        FS.Text = ""
-        FS.Parent = FG
-        Instance.new("UICorner", FS).CornerRadius = UDim.new(1, 0)
-
-        local FK = Instance.new("Frame")
-        FK.Size = UDim2.new(0, 20, 0, 20)
-        FK.Position = firerateEnabled and UDim2.new(1, -23, 0.5, -10) or UDim2.new(0, 3, 0.5, -10)
-        FK.BackgroundColor3 = Color3.new(1, 1, 1)
-        FK.Parent = FS
-        Instance.new("UICorner", FK).CornerRadius = UDim.new(1, 0)
-
-        FS.MouseButton1Click:Connect(function()
-            firerateEnabled = not firerateEnabled
-            FS.BackgroundColor3 = firerateEnabled and Color3.fromRGB(50, 205, 120) or Color3.fromRGB(80, 80, 100)
-            TweenService:Create(FK, TweenInfo.new(0.15), {Position = firerateEnabled and UDim2.new(1, -23, 0.5, -10) or UDim2.new(0, 3, 0.5, -10)}):Play()
-            SetFirerate(firerateEnabled)
-        end)
-
-        yPos += 65
-
-        -- Accuracy
-        local AG = Instance.new("Frame")
-        AG.Size = UDim2.new(1, 0, 0, 55)
-        AG.Position = UDim2.new(0, 0, 0, yPos)
-        AG.BackgroundColor3 = Color3.fromRGB(40, 40, 55)
-        AG.Parent = Content
-        Instance.new("UICorner", AG).CornerRadius = UDim.new(0, 8)
-
-        local AL = Instance.new("TextLabel")
-        AL.Text = "Accuracy (M4 → 2.3)"
-        AL.Font = Enum.Font.Gotham
-        AL.TextColor3 = Color3.fromRGB(220, 220, 220)
-        AL.TextSize = 15
-        AL.Size = UDim2.new(1, -80, 1, 0)
-        AL.Position = UDim2.new(0, 15, 0, 0)
-        AL.TextXAlignment = Enum.TextXAlignment.Left
-        AL.BackgroundTransparency = 1
-        AL.Parent = AG
-
-        local AS = Instance.new("TextButton")
-        AS.Size = UDim2.new(0, 50, 0, 26)
-        AS.Position = UDim2.new(1, -60, 0.5, -13)
-        AS.BackgroundColor3 = accuracyEnabled and Color3.fromRGB(50, 205, 120) or Color3.fromRGB(80, 80, 100)
-        AS.Text = ""
-        AS.Parent = AG
-        Instance.new("UICorner", AS).CornerRadius = UDim.new(1, 0)
-
-        local AK = Instance.new("Frame")
-        AK.Size = UDim2.new(0, 20, 0, 20)
-        AK.Position = accuracyEnabled and UDim2.new(1, -23, 0.5, -10) or UDim2.new(0, 3, 0.5, -10)
-        AK.BackgroundColor3 = Color3.new(1, 1, 1)
-        AK.Parent = AS
-        Instance.new("UICorner", AK).CornerRadius = UDim.new(1, 0)
-
-        AS.MouseButton1Click:Connect(function()
-            accuracyEnabled = not accuracyEnabled
-            AS.BackgroundColor3 = accuracyEnabled and Color3.fromRGB(50, 205, 120) or Color3.fromRGB(80, 80, 100)
-            TweenService:Create(AK, TweenInfo.new(0.15), {Position = accuracyEnabled and UDim2.new(1, -23, 0.5, -10) or UDim2.new(0, 3, 0.5, -10)}):Play()
-            SetAccuracy(accuracyEnabled)
-        end)
-
-        yPos += 65
-
-        -- Instant Reload
-        local RG = Instance.new("Frame")
-        RG.Size = UDim2.new(1, 0, 0, 55)
-        RG.Position = UDim2.new(0, 0, 0, yPos)
-        RG.BackgroundColor3 = Color3.fromRGB(40, 40, 55)
-        RG.Parent = Content
-        Instance.new("UICorner", RG).CornerRadius = UDim.new(0, 8)
-
-        local RL = Instance.new("TextLabel")
-        RL.Text = "Instant Reload (M4 → 0)"
-        RL.Font = Enum.Font.Gotham
-        RL.TextColor3 = Color3.fromRGB(220, 220, 220)
-        RL.TextSize = 15
-        RL.Size = UDim2.new(1, -80, 1, 0)
-        RL.Position = UDim2.new(0, 15, 0, 0)
-        RL.TextXAlignment = Enum.TextXAlignment.Left
-        RL.BackgroundTransparency = 1
-        RL.Parent = RG
-
-        local RS = Instance.new("TextButton")
-        RS.Size = UDim2.new(0, 50, 0, 26)
-        RS.Position = UDim2.new(1, -60, 0.5, -13)
-        RS.BackgroundColor3 = instantReloadEnabled and Color3.fromRGB(50, 205, 120) or Color3.fromRGB(80, 80, 100)
-        RS.Text = ""
-        RS.Parent = RG
-        Instance.new("UICorner", RS).CornerRadius = UDim.new(1, 0)
-
-        local RK = Instance.new("Frame")
-        RK.Size = UDim2.new(0, 20, 0, 20)
-        RK.Position = instantReloadEnabled and UDim2.new(1, -23, 0.5, -10) or UDim2.new(0, 3, 0.5, -10)
-        RK.BackgroundColor3 = Color3.new(1, 1, 1)
-        RK.Parent = RS
-        Instance.new("UICorner", RK).CornerRadius = UDim.new(1, 0)
-
-        RS.MouseButton1Click:Connect(function()
-            instantReloadEnabled = not instantReloadEnabled
-            RS.BackgroundColor3 = instantReloadEnabled and Color3.fromRGB(50, 205, 120) or Color3.fromRGB(80, 80, 100)
-            TweenService:Create(RK, TweenInfo.new(0.15), {Position = instantReloadEnabled and UDim2.new(1, -23, 0.5, -10) or UDim2.new(0, 3, 0.5, -10)}):Play()
-            SetInstantReload(instantReloadEnabled)
-        end)
-
-        yPos += 65
-
-        -- Max Mag
-        local MG = Instance.new("Frame")
-        MG.Size = UDim2.new(1, 0, 0, 55)
-        MG.Position = UDim2.new(0, 0, 0, yPos)
-        MG.BackgroundColor3 = Color3.fromRGB(40, 40, 55)
-        MG.Parent = Content
-        Instance.new("UICorner", MG).CornerRadius = UDim.new(0, 8)
-
-        local ML = Instance.new("TextLabel")
-        ML.Text = "Max Mag (M4 → 999)"
-        ML.Font = Enum.Font.Gotham
-        ML.TextColor3 = Color3.fromRGB(220, 220, 220)
-        ML.TextSize = 15
-        ML.Size = UDim2.new(1, -80, 1, 0)
-        ML.Position = UDim2.new(0, 15, 0, 0)
-        ML.TextXAlignment = Enum.TextXAlignment.Left
-        ML.BackgroundTransparency = 1
-        ML.Parent = MG
-
-        local MS = Instance.new("TextButton")
-        MS.Size = UDim2.new(0, 50, 0, 26)
-        MS.Position = UDim2.new(1, -60, 0.5, -13)
-        MS.BackgroundColor3 = maxMagEnabled and Color3.fromRGB(50, 205, 120) or Color3.fromRGB(80, 80, 100)
-        MS.Text = ""
-        MS.Parent = MG
-        Instance.new("UICorner", MS).CornerRadius = UDim.new(1, 0)
-
-        local MK = Instance.new("Frame")
-        MK.Size = UDim2.new(0, 20, 0, 20)
-        MK.Position = maxMagEnabled and UDim2.new(1, -23, 0.5, -10) or UDim2.new(0, 3, 0.5, -10)
-        MK.BackgroundColor3 = Color3.new(1, 1, 1)
-        MK.Parent = MS
-        Instance.new("UICorner", MK).CornerRadius = UDim.new(1, 0)
-
-        MS.MouseButton1Click:Connect(function()
-            maxMagEnabled = not maxMagEnabled
-            MS.BackgroundColor3 = maxMagEnabled and Color3.fromRGB(50, 205, 120) or Color3.fromRGB(80, 80, 100)
-            TweenService:Create(MK, TweenInfo.new(0.15), {Position = maxMagEnabled and UDim2.new(1, -23, 0.5, -10) or UDim2.new(0, 3, 0.5, -10)}):Play()
-            SetMaxMag(maxMagEnabled)
-        end)
-
-        yPos += 65
-
-        -- No Spread ✅ NEW
-        local SPG = Instance.new("Frame")
-        SPG.Size = UDim2.new(1, 0, 0, 55)
-        SPG.Position = UDim2.new(0, 0, 0, yPos)
-        SPG.BackgroundColor3 = Color3.fromRGB(40, 40, 55)
-        SPG.Parent = Content
-        Instance.new("UICorner", SPG).CornerRadius = UDim.new(0, 8)
-
-        local SPL = Instance.new("TextLabel")
-        SPL.Text = "No Spread (M4 → 0)"
-        SPL.Font = Enum.Font.Gotham
-        SPL.TextColor3 = Color3.fromRGB(220, 220, 220)
-        SPL.TextSize = 15
-        SPL.Size = UDim2.new(1, -80, 1, 0)
-        SPL.Position = UDim2.new(0, 15, 0, 0)
-        SPL.TextXAlignment = Enum.TextXAlignment.Left
-        SPL.BackgroundTransparency = 1
-        SPL.Parent = SPG
-
-        local SPS = Instance.new("TextButton")
-        SPS.Size = UDim2.new(0, 50, 0, 26)
-        SPS.Position = UDim2.new(1, -60, 0.5, -13)
-        SPS.BackgroundColor3 = noSpreadEnabled and Color3.fromRGB(50, 205, 120) or Color3.fromRGB(80, 80, 100)
-        SPS.Text = ""
-        SPS.Parent = SPG
-        Instance.new("UICorner", SPS).CornerRadius = UDim.new(1, 0)
-
-        local SPK = Instance.new("Frame")
-        SPK.Size = UDim2.new(0, 20, 0, 20)
-        SPK.Position = noSpreadEnabled and UDim2.new(1, -23, 0.5, -10) or UDim2.new(0, 3, 0.5, -10)
-        SPK.BackgroundColor3 = Color3.new(1, 1, 1)
-        SPK.Parent = SPS
-        Instance.new("UICorner", SPK).CornerRadius = UDim.new(1, 0)
-
-        SPS.MouseButton1Click:Connect(function()
-            noSpreadEnabled = not noSpreadEnabled
-            SPS.BackgroundColor3 = noSpreadEnabled and Color3.fromRGB(50, 205, 120) or Color3.fromRGB(80, 80, 100)
-            TweenService:Create(SPK, TweenInfo.new(0.15), {Position = noSpreadEnabled and UDim2.new(1, -23, 0.5, -10) or UDim2.new(0, 3, 0.5, -10)}):Play()
-            SetNoSpread(noSpreadEnabled)
-        end)
-
-        yPos += 65
-
-        -- No Recoil
-        local NRG = Instance.new("Frame")
-        NRG.Size = UDim2.new(1, 0, 0, 55)
-        NRG.Position = UDim2.new(0, 0, 0, yPos)
-        NRG.BackgroundColor3 = Color3.fromRGB(40, 40, 55)
-        NRG.Parent = Content
-        Instance.new("UICorner", NRG).CornerRadius = UDim.new(0, 8)
-
-        local NRL = Instance.new("TextLabel")
-        NRL.Text = "No Recoil"
-        NRL.Font = Enum.Font.Gotham
-        NRL.TextColor3 = Color3.fromRGB(220, 220, 220)
-        NRL.TextSize = 15
-        NRL.Size = UDim2.new(1, -80, 1, 0)
-        NRL.Position = UDim2.new(0, 15, 0, 0)
-        NRL.TextXAlignment = Enum.TextXAlignment.Left
-        NRL.BackgroundTransparency = 1
-        NRL.Parent = NRG
-
-        local NRS = Instance.new("TextButton")
-        NRS.Size = UDim2.new(0, 50, 0, 26)
-        NRS.Position = UDim2.new(1, -60, 0.5, -13)
-        NRS.BackgroundColor3 = noRecoilEnabled and Color3.fromRGB(50, 205, 120) or Color3.fromRGB(80, 80, 100)
-        NRS.Text = ""
-        NRS.Parent = NRG
-        Instance.new("UICorner", NRS).CornerRadius = UDim.new(1, 0)
-
-        local NRK = Instance.new("Frame")
-        NRK.Size = UDim2.new(0, 20, 0, 20)
-        NRK.Position = noRecoilEnabled and UDim2.new(1, -23, 0.5, -10) or UDim2.new(0, 3, 0.5, -10)
-        NRK.BackgroundColor3 = Color3.new(1, 1, 1)
-        NRK.Parent = NRS
-        Instance.new("UICorner", NRK).CornerRadius = UDim.new(1, 0)
-
-        NRS.MouseButton1Click:Connect(function()
-            noRecoilEnabled = not noRecoilEnabled
-            NRS.BackgroundColor3 = noRecoilEnabled and Color3.fromRGB(50, 205, 120) or Color3.fromRGB(80, 80, 100)
-            TweenService:Create(NRK, TweenInfo.new(0.15), {Position = noRecoilEnabled and UDim2.new(1, -23, 0.5, -10) or UDim2.new(0, 3, 0.5, -10)}):Play()
-            SetNoRecoil(noRecoilEnabled)
-        end)
-
-        yPos += 65
-
-        -- Ragebot Visuals
-        local VG = Instance.new("Frame")
-        VG.Size = UDim2.new(1, 0, 0, 55)
-        VG.Position = UDim2.new(0, 0, 0, yPos)
-        VG.BackgroundColor3 = Color3.fromRGB(40, 40, 55)
-        VG.Parent = Content
-        Instance.new("UICorner", VG).CornerRadius = UDim.new(0, 8)
-
-        local VL = Instance.new("TextLabel")
-        VL.Text = "Ragebot Visuals (Your Character)"
-        VL.Font = Enum.Font.Gotham
-        VL.TextColor3 = Color3.fromRGB(220, 220, 220)
-        VL.TextSize = 15
-        VL.Size = UDim2.new(1, -80, 1, 0)
-        VL.Position = UDim2.new(0, 15, 0, 0)
-        VL.TextXAlignment = Enum.TextXAlignment.Left
-        VL.BackgroundTransparency = 1
-        VL.Parent = VG
-
-        local VS = Instance.new("TextButton")
-        VS.Size = UDim2.new(0, 50, 0, 26)
-        VS.Position = UDim2.new(1, -60, 0.5, -13)
-        VS.BackgroundColor3 = ragebotVisualsEnabled and Color3.fromRGB(50, 205, 120) or Color3.fromRGB(80, 80, 100)
-        VS.Text = ""
-        VS.Parent = VG
-        Instance.new("UICorner", VS).CornerRadius = UDim.new(1, 0)
-
-        local VK = Instance.new("Frame")
-        VK.Size = UDim2.new(0, 20, 0, 20)
-        VK.Position = ragebotVisualsEnabled and UDim2.new(1, -23, 0.5, -10) or UDim2.new(0, 3, 0.5, -10)
-        VK.BackgroundColor3 = Color3.new(1, 1, 1)
-        VK.Parent = VS
-        Instance.new("UICorner", VK).CornerRadius = UDim.new(1, 0)
-
-        VS.MouseButton1Click:Connect(function()
-            ragebotVisualsEnabled = not ragebotVisualsEnabled
-            VS.BackgroundColor3 = ragebotVisualsEnabled and Color3.fromRGB(50, 205, 120) or Color3.fromRGB(80, 80, 100)
-            TweenService:Create(VK, TweenInfo.new(0.15), {Position = ragebotVisualsEnabled and UDim2.new(1, -23, 0.5, -10) or UDim2.new(0, 3, 0.5, -10)}):Play()
-            ApplyPurple(ragebotVisualsEnabled)
-        end)
-
+    local yPos = 10
+    
+    if CurrentTab == "Legit" then
+        local Title = Instance.new("TextLabel")
+        Title.Text = "Legit"
+        Title.Font = Enum.Font.GothamBold
+        Title.TextColor3 = Color3.fromRGB(255, 255, 255)
+        Title.TextSize = 17
+        Title.Size = UDim2.new(1, 0, 0, 28)
+        Title.TextXAlignment = Enum.TextXAlignment.Left
+        Title.BackgroundTransparency = 1
+        Title.Parent = Content
+        
+        local Info = Instance.new("TextLabel")
+        Info.Text = "No features here yet.\nRightShift to toggle menu."
+        Info.Font = Enum.Font.Gotham
+        Info.TextColor3 = Color3.fromRGB(160, 160, 170)
+        Info.TextSize = 14
+        Info.Size = UDim2.new(1, 0, 0, 60)
+        Info.Position = UDim2.new(0, 0, 0, 40)
+        Info.TextXAlignment = Enum.TextXAlignment.Left
+        Info.BackgroundTransparency = 1
+        Info.TextWrapped = true
+        Info.Parent = Content
+        
+    elseif CurrentTab == "Ragebot" then
+        local Title = Instance.new("TextLabel")
+        Title.Text = "Ragebot"
+        Title.Font = Enum.Font.GothamBold
+        Title.TextColor3 = Color3.fromRGB(255, 255, 255)
+        Title.TextSize = 17
+        Title.Size = UDim2.new(1, 0, 0, 28)
+        Title.TextXAlignment = Enum.TextXAlignment.Left
+        Title.BackgroundTransparency = 1
+        Title.Parent = Content
+        
+        MakeToggle(Content, "Firerate (M4 → 9999)", firerateEnabled, function(val)
+            firerateEnabled = val
+            SetFirerate(val)
+        end).Position = UDim2.new(0, 0, 0, yPos); yPos += 62
+        
+        MakeToggle(Content, "Accuracy (M4 → 2.3)", accuracyEnabled, function(val)
+            accuracyEnabled = val
+            SetAccuracy(val)
+        end).Position = UDim2.new(0, 0, 0, yPos); yPos += 62
+        
+        MakeToggle(Content, "Instant Reload", instantReloadEnabled, function(val)
+            instantReloadEnabled = val
+            SetInstantReload(val)
+        end).Position = UDim2.new(0, 0, 0, yPos); yPos += 62
+        
+        MakeToggle(Content, "Max Magazine (999)", maxMagEnabled, function(val)
+            maxMagEnabled = val
+            SetMaxMag(val)
+        end).Position = UDim2.new(0, 0, 0, yPos); yPos += 62
+        
+        MakeToggle(Content, "No Spread", noSpreadEnabled, function(val)
+            noSpreadEnabled = val
+            SetNoSpread(val)
+        end).Position = UDim2.new(0, 0, 0, yPos); yPos += 62
+        
+        MakeToggle(Content, "No Recoil (hold LMB)", noRecoilEnabled, function(val)
+            noRecoilEnabled = val
+            SetNoRecoil(val)
+        end).Position = UDim2.new(0, 0, 0, yPos); yPos += 62
+        
+        MakeToggle(Content, "Ragebot Visuals", ragebotVisualsEnabled, function(val)
+            ragebotVisualsEnabled = val
+            ApplyPurple(val)
+        end).Position = UDim2.new(0, 0, 0, yPos)
+        
     elseif CurrentTab == "Visuals" then
-        local T = Instance.new("TextLabel")
-        T.Text = "Visuals — Universal ESP"
-        T.Font = Enum.Font.GothamBold
-        T.TextColor3 = Color3.fromRGB(255, 255, 255)
-        T.TextSize = 18
-        T.Size = UDim2.new(1, 0, 0, 30)
-        T.TextXAlignment = Enum.TextXAlignment.Left
-        T.BackgroundTransparency = 1
-        T.Parent = Content
+        local Title = Instance.new("TextLabel")
+        Title.Text = "Visuals — Universal ESP"
+        Title.Font = Enum.Font.GothamBold
+        Title.TextColor3 = Color3.fromRGB(255, 255, 255)
+        Title.TextSize = 17
+        Title.Size = UDim2.new(1, 0, 0, 28)
+        Title.TextXAlignment = Enum.TextXAlignment.Left
+        Title.BackgroundTransparency = 1
+        Title.Parent = Content
+        
+        MakeToggle(Content, "Player Boxes", BOXES_ENABLED, function(val)
+            BOXES_ENABLED = val
+        end).Position = UDim2.new(0, 0, 0, yPos); yPos += 62
+        
+        MakeToggle(Content, "Tracers", TRACERS_ENABLED, function(val)
+            TRACERS_ENABLED = val
+        end).Position = UDim2.new(0, 0, 0, yPos); yPos += 62
+        
+        MakeToggle(Content, "Team Check", TEAM_CHECK, function(val)
+            TEAM_CHECK = val
+        end).Position = UDim2.new(0, 0, 0, yPos)
+        
+    elseif CurrentTab == "Settings" then
+        local Title = Instance.new("TextLabel")
+        Title.Text = "Settings"
+        Title.Font = Enum.Font.GothamBold
+        Title.TextColor3 = Color3.fromRGB(255, 255, 255)
+        Title.TextSize = 17
+        Title.Size = UDim2.new(1, 0, 0, 28)
+        Title.TextXAlignment = Enum.TextXAlignment.Left
+        Title.BackgroundTransparency = 1
+        Title.Parent = Content
+        
+        local Hint = Instance.new("TextLabel")
+        Hint.Text = "Press RightShift to open/close menu"
+        Hint.Font = Enum.Font.Gotham
+        Hint.TextColor3 = Color3.fromRGB(150, 150, 165)
+        Hint.TextSize = 13
+        Hint.Size = UDim2.new(1, 0, 0, 40)
+        Hint.Position = UDim2.new(0, 0, 0, 45)
+        Hint.TextXAlignment = Enum.TextXAlignment.Left
+        Hint.BackgroundTransparency = 1
+        Hint.Parent = Content
+    end
+end
 
-        local yPos = 50
+UpdateContent()
 
-        -- Player ESP
-        local EG = Instance.new("Frame")
-        EG.Size = UDim2.new(1, 0, 0, 55)
-        EG.Position = UDim2.new(0, 0, 0, yPos)
-        EG.BackgroundColor3 = Color3.fromRGB(40, 40, 55)
-        EG.Parent = Content
-        Instance.new("UICorner", EG).CornerRadius = UDim.new(0, 8)
-
-        local EL = Instance.new("TextLabel")
-        EL.Text = "Player ESP (Boxes + Names)"
-        EL.Font = Enum.Font.Gotham
-        EL.TextColor3 = Color3.fromRGB(220, 220, 220)
-        EL.TextSize = 15
-        EL.Size = UDim2.new(1, -80, 1, 0)
-        EL.Position = UDim2.new(0, 15, 0, 0)
-        EL.TextXAlignment = Enum.TextXAlignment.Left
-        EL.BackgroundTransparency = 1
-        EL.Parent = EG
-
-        local ES = Instance.new("TextButton")
-        ES.Size = UDim2.new(0, 50, 0, 26)
-        ES.Position = UDim2.new(1, -60, 0.5, -13)
-        ES.BackgroundColor3 = ESP_ENABLED and Color3.fromRGB(50, 205, 120) or Color3.fromRGB(80, 80, 100)
-        ES.Text = ""
-        ES.Parent = EG
-        Instance.new("UICorner", ES).CornerRadius = UDim.new(1, 0)
-
-        local EK = Instance.new("Frame")
-        EK.Size = UDim2.new(0, 20, 0, 20)
-        EK.Position = ESP_ENABLED and UDim2.new(1, -23, 0.5, -10) or UDim2.new(0, 3, 0.5, -10)
-        EK.BackgroundColor3 = Color3.new(1, 1, 1)
-        EK.Parent = ES
-        Instance.new("UICorner", EK).CornerRadius = UDim.new(1, 0)
-
-        ES.MouseButton1Click:Connect(function()
-            ESP_ENABLED = not ESP_ENABLED
-            ES.BackgroundColor3 = ESP_ENABLED and Color3.fromRGB(50, 205, 120) or Color3.fromRGB(80, 80, 100)
-            TweenService:Create(EK, TweenInfo.new(0.15), {Position = ESP_ENABLED and UDim2.new(1, -23, 0.5, -10) or UDim2.new(0, 3, 0.5, -10)}):Play()
-        end)
-
-        yPos += 65
-
-        -- Tracers
-        local TG = Instance.new("Frame")
-        TG.Size = UDim2.new(1, 0, 0, 55)
-        TG.Position = UDim2.new(0, 0, 0, yPos)
-        TG.BackgroundColor3 = Color3.fromRGB(40, 40, 55)
-        TG.Parent = Content
-        Instance.new("UICorner", TG).CornerRadius = UDim.new(0, 8)
-
-        local TL = Instance.new("TextLabel")
-        TL.Text = "Tracers"
-        TL.Font = Enum.Font.Gotham
-        TL.TextColor3 = Color3.fromRGB(220, 220, 220)
-        TL.TextSize = 15
-        TL.Size = UDim2.new(1, -80, 1, 0)
-        TL.Position = UDim2.new(0, 15, 0, 0)
-        TL
+print("✅ Menu Loaded! — RightShift = Toggle")
