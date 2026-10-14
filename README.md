@@ -482,4 +482,4 @@ end
 UIS.InputBegan:Connect(function(i,g) if g then return end; if i.KeyCode==Enum.KeyCode.RightShift then MenuOpen=not MenuOpen; MainFrame.Visible=MenuOpen; if MenuOpen then UpdateContent() end end end)
 UpdateContent()
 print("✅ Loaded — ESP Upgraded + Skeleton Toggle Added")
-print("💡 RightShift = Toggle Menu")   
+print("💡 RightShift = Toggle Menu")
